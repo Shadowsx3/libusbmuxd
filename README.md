@@ -259,6 +259,9 @@ ideviceinfo -n -u <UDID> -k DeviceName
 idevicediagnostics -n -u <UDID> diagnostics GasGauge
 ```
 
+When an iPhone is connected over USB, this fork does not also expose the same
+UDID as a Wi-Fi/network device. Unplug USB to test the Wi-Fi path.
+
 #### Option B: local source build
 
 The following workflow installs this modified `libusbmuxd` and the
