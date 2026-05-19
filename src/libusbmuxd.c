@@ -356,10 +356,15 @@ static char *trim_network_device_token(char *str)
 	return str;
 }
 
+static int device_udid_matches(const char *a, const char *b)
+{
+	return a && b && !strcasecmp(a, b);
+}
+
 static int network_device_exists(struct collection *device_collection, const char *udid)
 {
 	FOREACH(usbmuxd_device_info_t *dev, device_collection) {
-		if (dev && dev->conn_type == CONNECTION_TYPE_NETWORK && !strcmp(dev->udid, udid)) {
+		if (dev && dev->conn_type == CONNECTION_TYPE_NETWORK && device_udid_matches(dev->udid, udid)) {
 			return 1;
 		}
 	} ENDFOREACH
@@ -369,7 +374,7 @@ static int network_device_exists(struct collection *device_collection, const cha
 static int usb_device_exists(struct collection *device_collection, const char *udid)
 {
 	FOREACH(usbmuxd_device_info_t *dev, device_collection) {
-		if (dev && dev->conn_type == CONNECTION_TYPE_USB && !strcmp(dev->udid, udid)) {
+		if (dev && dev->conn_type == CONNECTION_TYPE_USB && device_udid_matches(dev->udid, udid)) {
 			return 1;
 		}
 	} ENDFOREACH
@@ -392,6 +397,18 @@ static void remove_network_devices_with_usb_peer(struct collection *device_colle
 			}
 		} ENDFOREACH
 	} while (removed);
+}
+
+static int device_info_list_has_conn_type(usbmuxd_device_info_t *device_list, int device_count, const char *udid, enum usbmux_connection_type conn_type)
+{
+	int i;
+
+	for (i = 0; i < device_count; i++) {
+		if (device_list[i].conn_type == conn_type && device_udid_matches(device_list[i].udid, udid)) {
+			return 1;
+		}
+	}
+	return 0;
 }
 
 static int network_device_collection_has_network(struct collection *device_collection)
@@ -1818,16 +1835,33 @@ got_device_list:
 	if (!network_device_collection_has_network(&tmpdevs) || coredevice_autodiscovery_forced()) {
 		add_coredevice_network_devices(&tmpdevs);
 	}
+	remove_network_devices_with_usb_peer(&tmpdevs);
 
 	// create copy of device info entries from collection
 	newlist = (usbmuxd_device_info_t*)malloc(sizeof(usbmuxd_device_info_t) * (collection_count(&tmpdevs) + 1));
 	dev_cnt = 0;
 	FOREACH(usbmuxd_device_info_t *di, &tmpdevs) {
-		if (di) {
+		if (di && di->conn_type == CONNECTION_TYPE_USB) {
 			memcpy(&newlist[dev_cnt], di, sizeof(usbmuxd_device_info_t));
-			free(di);
 			dev_cnt++;
 		}
+	} ENDFOREACH
+	FOREACH(usbmuxd_device_info_t *di, &tmpdevs) {
+		if (di && di->conn_type == CONNECTION_TYPE_NETWORK) {
+			if (device_info_list_has_conn_type(newlist, dev_cnt, di->udid, CONNECTION_TYPE_USB)) {
+				LIBUSBMUXD_DEBUG(1, "%s: Not returning network device %s because it is already reported over USB\n", __func__, di->udid);
+				continue;
+			}
+			if (device_info_list_has_conn_type(newlist, dev_cnt, di->udid, CONNECTION_TYPE_NETWORK)) {
+				LIBUSBMUXD_DEBUG(1, "%s: Not returning duplicate network device %s\n", __func__, di->udid);
+				continue;
+			}
+			memcpy(&newlist[dev_cnt], di, sizeof(usbmuxd_device_info_t));
+			dev_cnt++;
+		}
+	} ENDFOREACH
+	FOREACH(usbmuxd_device_info_t *di, &tmpdevs) {
+		free(di);
 	} ENDFOREACH
 	collection_free(&tmpdevs);
 
