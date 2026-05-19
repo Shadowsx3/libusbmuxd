@@ -19,7 +19,7 @@
     - [Windows](#windows)
   - [Configuring the source tree](#configuring-the-source-tree)
   - [Building and installation](#building-and-installation)
-  - [macOS arm64 local install with libimobiledevice tools](#macos-arm64-local-install-with-libimobiledevice-tools)
+  - [macOS arm64 install with libimobiledevice tools](#macos-arm64-install-with-libimobiledevice-tools)
 - [Usage](#usage)
 - [Contributing](#contributing)
 - [Links](#links)
@@ -201,7 +201,47 @@ make install
 If the install prefix is a system-owned directory such as `/usr/local`, the
 second command might need `sudo`.
 
-### macOS arm64 local install with libimobiledevice tools
+### macOS arm64 install with libimobiledevice tools
+
+#### Option A: Homebrew tap
+
+For most users on Apple Silicon Macs, install the preconfigured Homebrew
+formulas. This builds `libimobiledevice` command-line tools linked against this
+Wi-Fi-enabled `libusbmuxd` fork.
+
+Install the full Xcode app first. The Wi-Fi fallback uses `xcrun devicectl`,
+which is provided by Xcode/CoreDevice:
+
+```shell
+sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+xcrun devicectl list devices
+```
+
+Install the tap and tools:
+
+```shell
+brew tap Shadowsx3/tools
+brew install libimobiledevice-wifi
+```
+
+The formula is keg-only so it does not overwrite Homebrew's stock
+`libimobiledevice`. Add the Wi-Fi-enabled tools to your shell:
+
+```shell
+echo 'export PATH="$(brew --prefix libimobiledevice-wifi)/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+```
+
+Verify Wi-Fi discovery:
+
+```shell
+which idevice_id
+idevice_id -n -l
+ideviceinfo -n -u <UDID> -k DeviceName
+idevicediagnostics -n -u <UDID> diagnostics GasGauge
+```
+
+#### Option B: local source build
 
 The following workflow installs this modified `libusbmuxd` and the
 `libimobiledevice` command-line tools into a local, non-system prefix on Apple
