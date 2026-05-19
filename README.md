@@ -13,6 +13,7 @@
 ## Table of Contents
 - [Features](#features)
 - [Building](#building)
+  - [macOS Homebrew install for iPhone Wi-Fi commands](#macos-homebrew-install-for-iphone-wi-fi-commands)
   - [Prerequisites](#prerequisites)
     - [Linux (Debian/Ubuntu based)](#linux-debianubuntu-based)
     - [macOS](#macos)
@@ -55,6 +56,82 @@ Furthermore the Linux build optionally provides support using inotify if
 available.
 
 ## Building
+
+### macOS Homebrew install for iPhone Wi-Fi commands
+
+This is the recommended install path for macOS arm64 users who want
+`libimobiledevice` commands to work against an iPhone over Wi-Fi. The tap
+installs this fork of `libusbmuxd` and a matching `libimobiledevice` build whose
+tools link to it.
+
+```shell
+brew tap Shadowsx3/tools
+brew install Shadowsx3/tools/libusbmuxd Shadowsx3/tools/libimobiledevice
+```
+
+Make sure your shell resolves the tapped tools from Homebrew:
+
+```shell
+eval "$(/opt/homebrew/bin/brew shellenv)"
+which ideviceinfo
+which idevicediagnostics
+idevice_id --version
+otool -L "$(which ideviceinfo)" | grep -E 'libimobiledevice|libusbmuxd'
+```
+
+On Apple Silicon with the default Homebrew prefix, the `otool` output should
+reference:
+
+```text
+/opt/homebrew/opt/libimobiledevice/lib/libimobiledevice-1.0.6.dylib
+/opt/homebrew/opt/libusbmuxd/lib/libusbmuxd-2.0.7.dylib
+```
+
+Enable Wi-Fi access for the iPhone:
+
+```shell
+sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+xcrun devicectl list devices
+```
+
+Then connect the iPhone over USB once, open Finder, select the iPhone under
+Locations, enable "Show this iPhone when on Wi-Fi", and click Apply. Keep the
+Mac and iPhone on the same network, disconnect USB, and verify:
+
+```shell
+idevice_id -n -l
+ideviceinfo -n -u <UDID> -k DeviceName
+ideviceinfo -n -u <UDID> -q com.apple.mobile.battery
+idevicediagnostics -n -u <UDID> ioregentry AppleSmartBattery
+```
+
+The `AppleSmartBattery` IORegistry command exposes raw battery values such as
+`AppleRawBatteryVoltage`, `Amperage`, `AppleRawCurrentCapacity`,
+`AppleRawMaxCapacity`, `DesignCapacity`, `Temperature`, and `CycleCount`.
+
+If automatic discovery finds the device but a command cannot connect to the
+right Wi-Fi endpoint, set the classic Bonjour hostname explicitly:
+
+```shell
+export LIBUSBMUXD_NETWORK_DEVICES="<UDID>=<iPhone-hostname>.local"
+```
+
+For example:
+
+```shell
+export LIBUSBMUXD_NETWORK_DEVICES="00008150-000629380108401C=Basss-iPhone.local"
+```
+
+Persist it for new zsh shells if needed:
+
+```shell
+echo 'export LIBUSBMUXD_NETWORK_DEVICES="<UDID>=<iPhone-hostname>.local"' >> ~/.zshrc
+```
+
+Use `dscacheutil -q host -a name <iPhone-hostname>.local` or
+`ping <iPhone-hostname>.local` to confirm the hostname resolves on your LAN.
+Bonjour hostnames commonly derive from the device name, for example "Jane's
+iPhone" often appears as `Janes-iPhone.local`.
 
 ### Prerequisites
 
@@ -273,7 +350,6 @@ cat >> ~/.zshrc <<EOF
 export LIBIMOBILEDEVICE_LOCAL="$LOCAL_PREFIX"
 export PATH="\$LIBIMOBILEDEVICE_LOCAL/bin:\$PATH"
 export PKG_CONFIG_PATH="\$LIBIMOBILEDEVICE_LOCAL/lib/pkgconfig:/opt/homebrew/lib/pkgconfig:/opt/homebrew/share/pkgconfig:\${PKG_CONFIG_PATH:-}"
-export DYLD_LIBRARY_PATH="\$LIBIMOBILEDEVICE_LOCAL/lib:\${DYLD_LIBRARY_PATH:-}"
 EOF
 ```
 

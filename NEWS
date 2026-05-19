@@ -1,3 +1,13 @@
+Version 2.1.1-wifi.9
+~~~~~~~~~~~~~~~~~~~~
+
+* Changes:
+  - Publish the working Wi-Fi command build based on commit 41991a6.
+  - Document Homebrew installation with libimobiledevice tools linked to this
+    libusbmuxd build.
+  - Document raw Wi-Fi battery extraction with idevicediagnostics and the
+    optional LIBUSBMUXD_NETWORK_DEVICES fallback.
+
 Version 2.1.1
 ~~~~~~~~~~~~~
 
@@ -94,4 +104,3 @@ Version 1.0.9
   - Fixed WIN32 (MinGW) build
 
 This is the first release after the usbmuxd/libusbmuxd project split.
-
