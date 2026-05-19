@@ -1,3 +1,14 @@
+Version 2.1.1-wifi.10
+~~~~~~~~~~~~~~~~~~~~~
+
+* Changes:
+  - Make LIBUSBMUXD_NETWORK_DEVICES override Apple usbmuxd/CoreDevice network
+    records for the same UDID.
+  - Keep libimobiledevice Wi-Fi commands on the classic lockdown endpoint when
+    Xcode, Instruments, or xctrace exposes a .coredevice.local endpoint.
+  - Document the authoritative fallback behavior for troubleshooting Wi-Fi
+    command failures during lockdown QueryType.
+
 Version 2.1.1-wifi.9
 ~~~~~~~~~~~~~~~~~~~~
 
