@@ -87,10 +87,11 @@ show `ideviceinfo` using Homebrew's `libimobiledevice` and this tap's
 /opt/homebrew/opt/libusbmuxd/lib/libusbmuxd-2.0.7.dylib
 ```
 
-Enable Wi-Fi access for the iPhone:
+Enable Wi-Fi access for the iPhone and get the device UDID:
 
 ```shell
 sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+xcrun xctrace list devices
 xcrun devicectl list devices
 ```
 
@@ -110,7 +111,23 @@ The `AppleSmartBattery` IORegistry command exposes raw battery values such as
 `AppleRawMaxCapacity`, `DesignCapacity`, `Temperature`, and `CycleCount`.
 
 If automatic discovery finds the device but a command cannot connect to the
-right Wi-Fi endpoint, set the classic Bonjour hostname explicitly:
+right Wi-Fi endpoint, set the endpoint explicitly. Use the UDID shown by
+`xcrun xctrace list devices` or `xcrun devicectl list devices`, then get the
+iPhone's local IP from Settings > Wi-Fi > current network > info button.
+
+Direct local IP form:
+
+```shell
+export LIBUSBMUXD_NETWORK_DEVICES="<UDID>=<local-ip>"
+```
+
+For example:
+
+```shell
+export LIBUSBMUXD_NETWORK_DEVICES="00008150-000629380108401C=192.168.1.20"
+```
+
+Classic Bonjour hostname form:
 
 ```shell
 export LIBUSBMUXD_NETWORK_DEVICES="<UDID>=<iPhone-hostname>.local"
@@ -125,7 +142,7 @@ export LIBUSBMUXD_NETWORK_DEVICES="00008150-000629380108401C=Basss-iPhone.local"
 Persist it for new zsh shells if needed:
 
 ```shell
-echo 'export LIBUSBMUXD_NETWORK_DEVICES="<UDID>=<iPhone-hostname>.local"' >> ~/.zshrc
+echo 'export LIBUSBMUXD_NETWORK_DEVICES="<UDID>=<local-ip>"' >> ~/.zshrc
 ```
 
 Use `dscacheutil -q host -a name <iPhone-hostname>.local` or
