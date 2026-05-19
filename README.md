@@ -392,9 +392,20 @@ ideviceinfo -n -u <UDID> -k DeviceName
 idevicediagnostics -n -u <UDID> diagnostics GasGauge
 ```
 
-This modified library can add paired physical devices from
-`xcrun devicectl list devices` to the network device list when usbmuxd does not
-report them. To disable that CoreDevice fallback for a command, set:
+This modified library can add paired physical devices to the network device
+list when usbmuxd does not report them. The discovery order is:
+
+1. If `LIBUSBMUXD_NETWORK_DEVICES` is set, use it as the authoritative mapping
+   and skip automatic fallback discovery.
+2. If Apple usbmuxd already reports a network device, use that fast existing
+   list.
+3. If no network device is reported, browse Bonjour `_apple-mobdev2._tcp`
+   records and match the discovered iPhone hostname/IP to the paired Xcode
+   UDID by normalized device name.
+4. If Bonjour/Xcode matching cannot prove the UDID/endpoint pair, fall back to
+   CoreDevice through `xcrun devicectl list devices`.
+
+To disable CoreDevice fallback for a command, set:
 
 ```shell
 LIBUSBMUXD_COREDEVICE_AUTODISCOVERY=0 idevice_id -n -l

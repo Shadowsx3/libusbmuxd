@@ -28,6 +28,7 @@
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
+#include <ctype.h>
 
 #ifdef LIBUSBMUXD_STATIC
   #define USBMUXD_API
@@ -68,6 +69,8 @@ extern char *program_invocation_short_name;
 extern int _NSGetExecutablePath(char* buf, uint32_t* bufsize);
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <sys/time.h>
+#include <fcntl.h>
 #endif
 #endif
 
@@ -399,6 +402,13 @@ static int network_device_collection_has_network(struct collection *device_colle
 	return 0;
 }
 
+static int env_network_devices_configured(void)
+{
+	const char *env = getenv("LIBUSBMUXD_NETWORK_DEVICES");
+
+	return (env && *env);
+}
+
 static int resolve_network_device_host(const char *host, uint8_t *conn_data, size_t conn_data_size)
 {
 	struct addrinfo hints;
@@ -519,6 +529,421 @@ static void add_env_network_devices(struct collection *device_collection)
 
 	free(spec);
 }
+
+#if defined(__APPLE__)
+#define BONJOUR_DISCOVERY_MAX_DEVICES 16
+#define BONJOUR_DISCOVERY_MAX_OUTPUT (128 * 1024)
+
+struct bonjour_mobile_device {
+	char instance[256];
+	char host[256];
+	char normalized_name[128];
+};
+
+struct xcode_mobile_device {
+	char name[256];
+	char udid[64];
+	char normalized_name[128];
+};
+
+static char *run_command_capture_timeout(const char *command, int timeout_ms, size_t max_output)
+{
+	int fds[2];
+	pid_t pid;
+	char *output;
+	size_t used = 0;
+	int status;
+	long deadline_ms;
+	struct timeval now;
+
+	if (pipe(fds) < 0) {
+		return NULL;
+	}
+
+	pid = fork();
+	if (pid < 0) {
+		close(fds[0]);
+		close(fds[1]);
+		return NULL;
+	}
+
+	if (pid == 0) {
+		close(fds[0]);
+		dup2(fds[1], STDOUT_FILENO);
+		dup2(fds[1], STDERR_FILENO);
+		close(fds[1]);
+		execl("/bin/sh", "sh", "-c", command, (char*)NULL);
+		_exit(127);
+	}
+
+	close(fds[1]);
+	fcntl(fds[0], F_SETFL, fcntl(fds[0], F_GETFL, 0) | O_NONBLOCK);
+
+	output = (char*)calloc(1, max_output + 1);
+	if (!output) {
+		kill(pid, SIGKILL);
+		close(fds[0]);
+		waitpid(pid, &status, 0);
+		return NULL;
+	}
+
+	gettimeofday(&now, NULL);
+	deadline_ms = (now.tv_sec * 1000L) + (now.tv_usec / 1000L) + timeout_ms;
+
+	while (1) {
+		fd_set rfds;
+		long remaining_ms;
+		int ret;
+		pid_t waitres;
+
+		gettimeofday(&now, NULL);
+		remaining_ms = deadline_ms - ((now.tv_sec * 1000L) + (now.tv_usec / 1000L));
+		if (remaining_ms <= 0) {
+			kill(pid, SIGTERM);
+			break;
+		}
+
+		FD_ZERO(&rfds);
+		FD_SET(fds[0], &rfds);
+		now.tv_sec = remaining_ms / 1000L;
+		now.tv_usec = (remaining_ms % 1000L) * 1000L;
+		ret = select(fds[0] + 1, &rfds, NULL, NULL, &now);
+		if (ret > 0 && FD_ISSET(fds[0], &rfds)) {
+			ssize_t r;
+			do {
+				r = read(fds[0], output + used, max_output - used);
+				if (r > 0) {
+					used += (size_t)r;
+				}
+			} while (r > 0 && used < max_output);
+			if (used >= max_output) {
+				break;
+			}
+		}
+
+		waitres = waitpid(pid, &status, WNOHANG);
+		if (waitres == pid) {
+			break;
+		}
+		if (ret < 0 && errno != EINTR) {
+			break;
+		}
+	}
+
+	while (used < max_output) {
+		ssize_t r = read(fds[0], output + used, max_output - used);
+		if (r <= 0) {
+			break;
+		}
+		used += (size_t)r;
+	}
+	output[used] = '\0';
+	close(fds[0]);
+
+	if (waitpid(pid, &status, WNOHANG) == 0) {
+		kill(pid, SIGKILL);
+		waitpid(pid, &status, 0);
+	}
+
+	return output;
+}
+
+static int shell_quote(const char *input, char *output, size_t output_size)
+{
+	size_t used = 0;
+
+	if (output_size < 3) {
+		return -1;
+	}
+	output[used++] = '\'';
+	while (*input) {
+		if (*input == '\'') {
+			if (used + 4 >= output_size) {
+				return -1;
+			}
+			output[used++] = '\'';
+			output[used++] = '\\';
+			output[used++] = '\'';
+			output[used++] = '\'';
+		} else {
+			if (used + 1 >= output_size) {
+				return -1;
+			}
+			output[used++] = *input;
+		}
+		input++;
+	}
+	if (used + 1 >= output_size) {
+		return -1;
+	}
+	output[used++] = '\'';
+	output[used] = '\0';
+	return 0;
+}
+
+static void normalize_device_name(const char *input, char *output, size_t output_size)
+{
+	size_t used = 0;
+	const char *end = input;
+
+	while (*end && strncasecmp(end, ".local", 6) != 0) {
+		end++;
+	}
+
+	while (*input && input < end && used + 1 < output_size) {
+		unsigned char ch = (unsigned char)*input;
+		if (isalnum(ch)) {
+			output[used++] = (char)tolower(ch);
+		}
+		input++;
+	}
+	output[used] = '\0';
+}
+
+static int looks_like_ios_udid(const char *value)
+{
+	size_t len = 0;
+	int hyphens = 0;
+
+	if (!value || !*value) {
+		return 0;
+	}
+	while (value[len]) {
+		if (value[len] == '-') {
+			hyphens++;
+		} else if (!isxdigit((unsigned char)value[len])) {
+			return 0;
+		}
+		len++;
+	}
+	return (len >= 20 && len < 64 && hyphens <= 1);
+}
+
+static int parse_xcode_mobile_devices(const char *text, struct xcode_mobile_device *out_devices, int max_devices)
+{
+	char *copy;
+	char *line;
+	char *saveptr = NULL;
+	int in_devices = 0;
+	int count = 0;
+
+	if (!text) {
+		return 0;
+	}
+
+	copy = strdup(text);
+	if (!copy) {
+		return 0;
+	}
+
+	line = strtok_r(copy, "\n", &saveptr);
+	while (line && count < max_devices) {
+		char *last_open;
+		char *last_close;
+		char *first_version;
+
+		while (*line == ' ' || *line == '\t') {
+			line++;
+		}
+
+		if (!strncmp(line, "== ", 3)) {
+			in_devices = (!strncmp(line, "== Devices ==", 13) || !strncmp(line, "== Devices Offline ==", 21));
+			if (!strncmp(line, "== Simulators ==", 16)) {
+				in_devices = 0;
+			}
+			line = strtok_r(NULL, "\n", &saveptr);
+			continue;
+		}
+
+		if (!in_devices || !*line) {
+			line = strtok_r(NULL, "\n", &saveptr);
+			continue;
+		}
+
+		last_close = strrchr(line, ')');
+		last_open = last_close ? last_close : NULL;
+		while (last_open && last_open > line && *last_open != '(') {
+			last_open--;
+		}
+		if (!last_open || !last_close || last_open >= last_close) {
+			line = strtok_r(NULL, "\n", &saveptr);
+			continue;
+		}
+		*last_close = '\0';
+		if (!looks_like_ios_udid(last_open + 1)) {
+			line = strtok_r(NULL, "\n", &saveptr);
+			continue;
+		}
+
+		first_version = strstr(line, " (");
+		if (!first_version || first_version >= last_open) {
+			line = strtok_r(NULL, "\n", &saveptr);
+			continue;
+		}
+		*first_version = '\0';
+
+		stpncpy(out_devices[count].name, line, sizeof(out_devices[count].name)-1);
+		stpncpy(out_devices[count].udid, last_open + 1, sizeof(out_devices[count].udid)-1);
+		normalize_device_name(out_devices[count].name, out_devices[count].normalized_name, sizeof(out_devices[count].normalized_name));
+		if (out_devices[count].normalized_name[0]) {
+			count++;
+		}
+
+		line = strtok_r(NULL, "\n", &saveptr);
+	}
+
+	free(copy);
+	return count;
+}
+
+static int parse_bonjour_mobile_instances(const char *text, struct bonjour_mobile_device *out_devices, int max_devices)
+{
+	char *copy;
+	char *line;
+	char *saveptr = NULL;
+	int count = 0;
+
+	if (!text) {
+		return 0;
+	}
+
+	copy = strdup(text);
+	if (!copy) {
+		return 0;
+	}
+
+	line = strtok_r(copy, "\n", &saveptr);
+	while (line && count < max_devices) {
+		char *service = strstr(line, "_apple-mobdev2._tcp.");
+		char *instance;
+
+		if (!service) {
+			line = strtok_r(NULL, "\n", &saveptr);
+			continue;
+		}
+		instance = service + strlen("_apple-mobdev2._tcp.");
+		while (*instance == ' ' || *instance == '\t') {
+			instance++;
+		}
+		if (*instance) {
+			stpncpy(out_devices[count].instance, instance, sizeof(out_devices[count].instance)-1);
+			count++;
+		}
+		line = strtok_r(NULL, "\n", &saveptr);
+	}
+
+	free(copy);
+	return count;
+}
+
+static int resolve_bonjour_mobile_hosts(struct bonjour_mobile_device *out_devices, int count)
+{
+	int resolved = 0;
+	int i;
+
+	for (i = 0; i < count; i++) {
+		char quoted[640];
+		char command[768];
+		char *output;
+		char *reached;
+		char *host_start;
+		char *host_end;
+
+		if (shell_quote(out_devices[i].instance, quoted, sizeof(quoted)) < 0) {
+			continue;
+		}
+		snprintf(command, sizeof(command), "dns-sd -L %s _apple-mobdev2._tcp local", quoted);
+		output = run_command_capture_timeout(command, 1200, 16 * 1024);
+		if (!output) {
+			continue;
+		}
+		reached = strstr(output, " can be reached at ");
+		if (!reached) {
+			free(output);
+			continue;
+		}
+		host_start = reached + strlen(" can be reached at ");
+		host_end = strstr(host_start, ".:");
+		if (!host_end) {
+			free(output);
+			continue;
+		}
+		*(host_end + 1) = '\0';
+		stpncpy(out_devices[i].host, host_start, sizeof(out_devices[i].host)-1);
+		normalize_device_name(out_devices[i].host, out_devices[i].normalized_name, sizeof(out_devices[i].normalized_name));
+		if (out_devices[i].host[0] && out_devices[i].normalized_name[0]) {
+			resolved++;
+		}
+		free(output);
+	}
+
+	return resolved;
+}
+
+static void add_bonjour_xcode_network_devices(struct collection *device_collection)
+{
+	struct bonjour_mobile_device bonjour[BONJOUR_DISCOVERY_MAX_DEVICES];
+	struct xcode_mobile_device xcode[BONJOUR_DISCOVERY_MAX_DEVICES];
+	char *bonjour_output;
+	char *xcode_output;
+	int bonjour_count;
+	int xcode_count;
+	uint32_t next_handle;
+	int i;
+
+	memset(bonjour, 0, sizeof(bonjour));
+	memset(xcode, 0, sizeof(xcode));
+
+	bonjour_output = run_command_capture_timeout("dns-sd -B _apple-mobdev2._tcp local", 1000, BONJOUR_DISCOVERY_MAX_OUTPUT);
+	if (!bonjour_output) {
+		return;
+	}
+	bonjour_count = parse_bonjour_mobile_instances(bonjour_output, bonjour, BONJOUR_DISCOVERY_MAX_DEVICES);
+	free(bonjour_output);
+	if (bonjour_count <= 0 || resolve_bonjour_mobile_hosts(bonjour, bonjour_count) <= 0) {
+		LIBUSBMUXD_DEBUG(1, "%s: No _apple-mobdev2 Bonjour devices found\n", __func__);
+		return;
+	}
+
+	xcode_output = run_command_capture_timeout("xcrun xctrace list devices 2>/dev/null", 4000, BONJOUR_DISCOVERY_MAX_OUTPUT);
+	if (!xcode_output) {
+		return;
+	}
+	xcode_count = parse_xcode_mobile_devices(xcode_output, xcode, BONJOUR_DISCOVERY_MAX_DEVICES);
+	free(xcode_output);
+	if (xcode_count <= 0) {
+		LIBUSBMUXD_DEBUG(1, "%s: No paired physical iOS devices found in xctrace device list\n", __func__);
+		return;
+	}
+
+	next_handle = next_network_device_handle(device_collection);
+	for (i = 0; i < bonjour_count; i++) {
+		int j;
+		int match = -1;
+		int matches = 0;
+
+		if (!bonjour[i].host[0] || !bonjour[i].normalized_name[0]) {
+			continue;
+		}
+		for (j = 0; j < xcode_count; j++) {
+			if (!strcmp(bonjour[i].normalized_name, xcode[j].normalized_name)) {
+				match = j;
+				matches++;
+			}
+		}
+		if (matches == 1) {
+			LIBUSBMUXD_DEBUG(1, "%s: Matched Bonjour host %s to Xcode device %s (%s)\n", __func__, bonjour[i].host, xcode[match].name, xcode[match].udid);
+			add_network_device(device_collection, xcode[match].udid, bonjour[i].host, &next_handle);
+		} else {
+			LIBUSBMUXD_DEBUG(1, "%s: Skipping ambiguous Bonjour host %s (%d Xcode name matches)\n", __func__, bonjour[i].host, matches);
+		}
+	}
+}
+#else
+static void add_bonjour_xcode_network_devices(struct collection *device_collection)
+{
+}
+#endif
 
 #if defined(__APPLE__) && defined(HAVE_PLIST_JSON)
 static int plist_dict_get_string(plist_t dict, const char *key, char **value)
@@ -1805,10 +2230,16 @@ got_device_list:
 	// explicitly close connection
 	socket_close(sfd);
 
-	if (!network_device_collection_has_network(&tmpdevs) || coredevice_autodiscovery_forced()) {
-		add_coredevice_network_devices(&tmpdevs);
+	if (env_network_devices_configured()) {
+		add_env_network_devices(&tmpdevs);
+	} else {
+		if (!network_device_collection_has_network(&tmpdevs)) {
+			add_bonjour_xcode_network_devices(&tmpdevs);
+		}
+		if (!network_device_collection_has_network(&tmpdevs) || coredevice_autodiscovery_forced()) {
+			add_coredevice_network_devices(&tmpdevs);
+		}
 	}
-	add_env_network_devices(&tmpdevs);
 
 	// create copy of device info entries from collection
 	newlist = (usbmuxd_device_info_t*)malloc(sizeof(usbmuxd_device_info_t) * (collection_count(&tmpdevs) + 1));

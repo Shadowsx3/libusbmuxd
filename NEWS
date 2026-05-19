@@ -1,3 +1,16 @@
+Version 2.1.1-wifi.11
+~~~~~~~~~~~~~~~~~~~~~
+
+* Changes:
+  - Add a fast automatic fallback path for the case where
+    LIBUSBMUXD_NETWORK_DEVICES is not set and Apple usbmuxd does not report a
+    network device.
+  - Discover local iPhone Wi-Fi lockdown endpoints through Bonjour
+    _apple-mobdev2._tcp and match them to paired Xcode device UDIDs by device
+    name.
+  - Keep the explicit LIBUSBMUXD_NETWORK_DEVICES mapping authoritative and
+    avoid slow CoreDevice discovery when it is configured.
+
 Version 2.1.1-wifi.10
 ~~~~~~~~~~~~~~~~~~~~~
 
