@@ -80,10 +80,10 @@ otool -L "$(which ideviceinfo)" | grep -E 'libimobiledevice|libusbmuxd'
 ```
 
 On Apple Silicon with the default Homebrew prefix, the `otool` output should
-reference:
+show `ideviceinfo` using Homebrew's `libimobiledevice` and this tap's
+`libusbmuxd`. The important line is:
 
 ```text
-/opt/homebrew/opt/libimobiledevice/lib/libimobiledevice-1.0.6.dylib
 /opt/homebrew/opt/libusbmuxd/lib/libusbmuxd-2.0.7.dylib
 ```
 
