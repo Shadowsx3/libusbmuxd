@@ -411,16 +411,6 @@ static int device_info_list_has_conn_type(usbmuxd_device_info_t *device_list, in
 	return 0;
 }
 
-static int network_device_collection_has_network(struct collection *device_collection)
-{
-	FOREACH(usbmuxd_device_info_t *dev, device_collection) {
-		if (dev && dev->conn_type == CONNECTION_TYPE_NETWORK) {
-			return 1;
-		}
-	} ENDFOREACH
-	return 0;
-}
-
 static int resolve_network_device_host(const char *host, uint8_t *conn_data, size_t conn_data_size)
 {
 	struct addrinfo hints;
@@ -677,13 +667,6 @@ static int coredevice_autodiscovery_enabled(void)
 		return 0;
 	}
 	return 1;
-}
-
-static int coredevice_autodiscovery_forced(void)
-{
-	const char *env = getenv("LIBUSBMUXD_COREDEVICE_AUTODISCOVERY");
-
-	return (env && (!strcmp(env, "1") || !strcasecmp(env, "true") || !strcasecmp(env, "yes") || !strcasecmp(env, "force")));
 }
 
 static void add_coredevice_network_devices(struct collection *device_collection)
@@ -1859,9 +1842,7 @@ got_device_list:
 
 	remove_network_devices_with_usb_peer(&tmpdevs);
 	add_env_network_devices(&tmpdevs);
-	if (!network_device_collection_has_network(&tmpdevs) || coredevice_autodiscovery_forced()) {
-		add_coredevice_network_devices(&tmpdevs);
-	}
+	add_coredevice_network_devices(&tmpdevs);
 	remove_network_devices_with_usb_peer(&tmpdevs);
 
 	// create copy of device info entries from collection

@@ -1,3 +1,12 @@
+Version 2.1.1-wifi.7
+~~~~~~~~~~~~~~~~~~~~
+
+* Changes:
+  - Run CoreDevice fallback discovery for missing paired devices even when
+    usbmuxd already reports a different network device.
+  - Keep USB duplicate suppression so USB still wins when the same UDID is
+    connected over both USB and network.
+
 Version 2.1.1-wifi.6
 ~~~~~~~~~~~~~~~~~~~~
 
