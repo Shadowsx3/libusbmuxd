@@ -233,15 +233,18 @@ Install the tap and tools:
 
 ```shell
 brew tap Shadowsx3/tools
-brew install libimobiledevice-wifi
+brew install Shadowsx3/tools/libimobiledevice
 ```
 
-The formula is keg-only so it does not overwrite Homebrew's stock
-`libimobiledevice`. Add the Wi-Fi-enabled tools to your shell:
+This installs the patched formulas as drop-in replacements for Homebrew/core's
+`libusbmuxd` and `libimobiledevice`.
+
+If Homebrew already has the stock formulas installed and reports a conflict,
+replace them explicitly:
 
 ```shell
-echo 'export PATH="$(brew --prefix libimobiledevice-wifi)/bin:$PATH"' >> ~/.zshrc
-source ~/.zshrc
+brew uninstall libimobiledevice libusbmuxd
+brew install Shadowsx3/tools/libimobiledevice
 ```
 
 Verify Wi-Fi discovery:
