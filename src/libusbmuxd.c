@@ -60,6 +60,7 @@
 #include <signal.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
+#include <netdb.h>
 #if defined(HAVE_PROGRAM_INVOCATION_SHORT_NAME) && !defined(HAVE_PROGRAM_INVOCATION_SHORT_NAME_ERRNO_H)
 extern char *program_invocation_short_name;
 #endif
@@ -336,6 +337,132 @@ static usbmuxd_device_info_t *device_info_from_device_record(struct usbmuxd_devi
 	sanitize_udid(devinfo);
 
 	return devinfo;
+}
+
+static char *trim_network_device_token(char *str)
+{
+	char *end;
+	while (*str == ' ' || *str == '\t' || *str == '\n' || *str == '\r') {
+		str++;
+	}
+	if (!*str) {
+		return str;
+	}
+	end = str + strlen(str) - 1;
+	while (end > str && (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r')) {
+		*end-- = '\0';
+	}
+	return str;
+}
+
+static int network_device_exists(struct collection *device_collection, const char *udid)
+{
+	FOREACH(usbmuxd_device_info_t *dev, device_collection) {
+		if (dev && !strcmp(dev->udid, udid)) {
+			return 1;
+		}
+	} ENDFOREACH
+	return 0;
+}
+
+static int resolve_network_device_host(const char *host, uint8_t *conn_data, size_t conn_data_size)
+{
+	struct addrinfo hints;
+	struct addrinfo *result = NULL;
+	struct addrinfo *cur = NULL;
+	int families[] = { AF_INET, AF_INET6 };
+	int ret = -1;
+	int i;
+
+	memset(&hints, 0, sizeof(hints));
+	hints.ai_socktype = SOCK_STREAM;
+
+	if (getaddrinfo(host, NULL, &hints, &result) != 0) {
+		return -1;
+	}
+
+	for (i = 0; i < 2 && ret < 0; i++) {
+		for (cur = result; cur; cur = cur->ai_next) {
+			if (cur->ai_family != families[i]) {
+				continue;
+			}
+			if (cur->ai_addrlen > conn_data_size) {
+				continue;
+			}
+			memset(conn_data, 0, conn_data_size);
+			memcpy(conn_data, cur->ai_addr, cur->ai_addrlen);
+			ret = 0;
+			break;
+		}
+	}
+
+	freeaddrinfo(result);
+	return ret;
+}
+
+static void add_env_network_devices(struct collection *device_collection)
+{
+	const char *env = getenv("LIBUSBMUXD_NETWORK_DEVICES");
+	char *spec = NULL;
+	char *saveptr = NULL;
+	char *entry = NULL;
+	uint32_t next_handle;
+
+	if (!env || !*env) {
+		return;
+	}
+
+	spec = strdup(env);
+	if (!spec) {
+		return;
+	}
+
+	next_handle = 0xC0000000u + (uint32_t)collection_count(device_collection) + 1;
+	entry = strtok_r(spec, ",;", &saveptr);
+	while (entry) {
+		char *sep = strchr(entry, '=');
+		char *udid = NULL;
+		char *host = NULL;
+		usbmuxd_device_info_t *devinfo = NULL;
+
+		if (!sep) {
+			sep = strchr(entry, '@');
+		}
+		if (!sep) {
+			LIBUSBMUXD_DEBUG(1, "%s: Ignoring invalid LIBUSBMUXD_NETWORK_DEVICES entry '%s'\n", __func__, entry);
+			entry = strtok_r(NULL, ",;", &saveptr);
+			continue;
+		}
+
+		*sep = '\0';
+		udid = trim_network_device_token(entry);
+		host = trim_network_device_token(sep + 1);
+		if (!*udid || !*host || network_device_exists(device_collection, udid)) {
+			entry = strtok_r(NULL, ",;", &saveptr);
+			continue;
+		}
+
+		devinfo = (usbmuxd_device_info_t*)calloc(1, sizeof(usbmuxd_device_info_t));
+		if (!devinfo) {
+			break;
+		}
+		devinfo->handle = next_handle++;
+		devinfo->conn_type = CONNECTION_TYPE_NETWORK;
+		stpncpy(devinfo->udid, udid, sizeof(devinfo->udid)-1);
+
+		if (resolve_network_device_host(host, devinfo->conn_data, sizeof(devinfo->conn_data)) < 0) {
+			LIBUSBMUXD_DEBUG(1, "%s: Could not resolve network device host '%s' for %s\n", __func__, host, udid);
+			free(devinfo);
+			entry = strtok_r(NULL, ",;", &saveptr);
+			continue;
+		}
+
+		LIBUSBMUXD_DEBUG(1, "%s: Added fallback network device %s at %s\n", __func__, udid, host);
+		collection_add(device_collection, devinfo);
+		entry = strtok_r(NULL, ",;", &saveptr);
+	}
+
+	free(spec);
 }
 
 static int receive_packet(int sfd, struct usbmuxd_header *header, void **payload, int timeout)
@@ -1394,6 +1521,8 @@ got_device_list:
 
 	// explicitly close connection
 	socket_close(sfd);
+
+	add_env_network_devices(&tmpdevs);
 
 	// create copy of device info entries from collection
 	newlist = (usbmuxd_device_info_t*)malloc(sizeof(usbmuxd_device_info_t) * (collection_count(&tmpdevs) + 1));
