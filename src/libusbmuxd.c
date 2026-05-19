@@ -598,9 +598,23 @@ static char *read_text_file(const char *path, uint32_t *length)
 	return data;
 }
 
-static char *coredevice_human_hostname(plist_t hostnames, const char *udid, const char *identifier)
+static int str_has_suffix(const char *str, const char *suffix)
 {
-	char *fallback = NULL;
+	size_t str_len;
+	size_t suffix_len;
+
+	if (!str || !suffix) {
+		return 0;
+	}
+
+	str_len = strlen(str);
+	suffix_len = strlen(suffix);
+	return str_len >= suffix_len && !strcasecmp(str + str_len - suffix_len, suffix);
+}
+
+static char *coredevice_classic_lockdown_hostname(plist_t hostnames, const char *udid, const char *identifier)
+{
+	const char *coredevice_suffix = ".coredevice.local";
 	uint32_t i;
 	uint32_t count;
 
@@ -614,6 +628,7 @@ static char *coredevice_human_hostname(plist_t hostnames, const char *udid, cons
 		char *hostname = NULL;
 		char base[256];
 		char *dot = NULL;
+		int is_coredevice_hostname;
 
 		if (!node || plist_get_node_type(node) != PLIST_STRING) {
 			continue;
@@ -622,24 +637,36 @@ static char *coredevice_human_hostname(plist_t hostnames, const char *udid, cons
 		if (!hostname) {
 			continue;
 		}
-		if (!fallback) {
-			fallback = strdup(hostname);
-		}
+		is_coredevice_hostname = str_has_suffix(hostname, coredevice_suffix);
 
 		stpncpy(base, hostname, sizeof(base)-1);
 		base[sizeof(base)-1] = '\0';
-		dot = strchr(base, '.');
-		if (dot) {
-			*dot = '\0';
+		if (is_coredevice_hostname) {
+			base[strlen(base) - strlen(coredevice_suffix)] = '\0';
+		} else {
+			dot = strchr(base, '.');
+			if (dot) {
+				*dot = '\0';
+			}
 		}
 		if ((!udid || strcasecmp(base, udid) != 0) && (!identifier || strcasecmp(base, identifier) != 0)) {
-			free(fallback);
+			if (is_coredevice_hostname) {
+				size_t classic_len = strlen(base) + strlen(".local") + 1;
+				char *classic = (char*)malloc(classic_len);
+
+				free(hostname);
+				if (!classic) {
+					return NULL;
+				}
+				snprintf(classic, classic_len, "%s.local", base);
+				return classic;
+			}
 			return hostname;
 		}
 		free(hostname);
 	}
 
-	return fallback;
+	return NULL;
 }
 
 static int coredevice_autodiscovery_enabled(void)
@@ -747,7 +774,7 @@ static void add_coredevice_network_devices(struct collection *device_collection)
 		}
 
 		hostnames = plist_dict_get_item(connection, "potentialHostnames");
-		hostname = coredevice_human_hostname(hostnames, udid, identifier);
+		hostname = coredevice_classic_lockdown_hostname(hostnames, udid, identifier);
 		if (hostname) {
 			add_network_device(device_collection, udid, hostname, &next_handle);
 			free(hostname);

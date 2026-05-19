@@ -1,3 +1,12 @@
+Version 2.1.1-wifi.6
+~~~~~~~~~~~~~~~~~~~~
+
+* Changes:
+  - Convert friendly CoreDevice hostnames such as Basss-iPhone.coredevice.local
+    to classic Wi-Fi lockdownd hostnames such as Basss-iPhone.local.
+  - Ignore CoreDevice UUID/UDID tunnel hostnames for classic lockdownd
+    connections.
+
 Version 2.1.1-wifi.5
 ~~~~~~~~~~~~~~~~~~~~
 
