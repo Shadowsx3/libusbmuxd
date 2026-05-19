@@ -238,6 +238,9 @@ brew install Shadowsx3/tools/libimobiledevice
 
 This installs the patched formulas as drop-in replacements for Homebrew/core's
 `libusbmuxd` and `libimobiledevice`.
+On supported Apple Silicon macOS versions, Homebrew pours prebuilt bottles from
+the tap's GitHub releases. To force a local source build, add
+`--build-from-source`.
 
 If Homebrew already has the stock formulas installed and reports a conflict,
 replace them explicitly:
