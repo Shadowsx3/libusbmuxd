@@ -390,6 +390,22 @@ devices, set:
 LIBUSBMUXD_COREDEVICE_AUTODISCOVERY=force idevice_id -n -l
 ```
 
+`LIBUSBMUXD_NETWORK_DEVICES` is authoritative. If Apple usbmuxd or CoreDevice
+already reports a network record for the same UDID, the explicit mapping
+replaces that record. This keeps `libimobiledevice` commands on the classic
+Wi-Fi lockdown endpoint, for example `Basss-iPhone.local`, instead of a
+`.coredevice.local` tunnel endpoint that can be created by Xcode, Instruments,
+or `xctrace`.
+
+Use this when discovery works but commands fail during lockdown startup, for
+example when `idevice_id -n -l` lists the phone but `ideviceinfo -n` or
+`idevicediagnostics -n` fails during `QueryType`:
+
+```shell
+export LIBUSBMUXD_NETWORK_DEVICES="<UDID>=<iPhone-hostname>.local"
+idevicediagnostics -n -u <UDID> ioregentry AppleSmartBattery
+```
+
 ## Usage
 
 ### iproxy

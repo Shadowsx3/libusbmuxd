@@ -366,6 +366,29 @@ static int network_device_exists(struct collection *device_collection, const cha
 	return 0;
 }
 
+static void remove_network_devices(struct collection *device_collection, const char *udid)
+{
+	usbmuxd_device_info_t *match = NULL;
+
+	if (!udid || !*udid) {
+		return;
+	}
+
+	do {
+		match = NULL;
+		FOREACH(usbmuxd_device_info_t *dev, device_collection) {
+			if (dev && dev->conn_type == CONNECTION_TYPE_NETWORK && !strcmp(dev->udid, udid)) {
+				match = dev;
+				break;
+			}
+		} ENDFOREACH
+		if (match) {
+			collection_remove(device_collection, match);
+			free(match);
+		}
+	} while (match);
+}
+
 static int network_device_collection_has_network(struct collection *device_collection)
 {
 	FOREACH(usbmuxd_device_info_t *dev, device_collection) {
@@ -487,6 +510,7 @@ static void add_env_network_devices(struct collection *device_collection)
 		*sep = '\0';
 		udid = trim_network_device_token(entry);
 		host = trim_network_device_token(sep + 1);
+		remove_network_devices(device_collection, udid);
 		if (add_network_device(device_collection, udid, host, &next_handle) < 0) {
 			break;
 		}
@@ -1781,10 +1805,10 @@ got_device_list:
 	// explicitly close connection
 	socket_close(sfd);
 
-	add_env_network_devices(&tmpdevs);
 	if (!network_device_collection_has_network(&tmpdevs) || coredevice_autodiscovery_forced()) {
 		add_coredevice_network_devices(&tmpdevs);
 	}
+	add_env_network_devices(&tmpdevs);
 
 	// create copy of device info entries from collection
 	newlist = (usbmuxd_device_info_t*)malloc(sizeof(usbmuxd_device_info_t) * (collection_count(&tmpdevs) + 1));
