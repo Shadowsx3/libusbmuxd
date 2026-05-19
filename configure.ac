@@ -42,6 +42,11 @@ PKG_CHECK_MODULES(libplist, libplist-2.0 >= $LIBPLIST_VERSION)
 PKG_CHECK_MODULES(limd_glue, libimobiledevice-glue-1.0 >= $LIMD_GLUE_VERSION)
 AC_CHECK_HEADERS([sys/inotify.h], have_inotify=yes, have_inotify=no)
 
+CACHED_CFLAGS="$CFLAGS"
+CFLAGS+=" $libplist_CFLAGS"
+AC_CHECK_DECL([plist_from_json], [AC_DEFINE([HAVE_PLIST_JSON], [1], [Define if libplist has JSON support])], [], [[#include <plist/plist.h>]])
+CFLAGS="$CACHED_CFLAGS"
+
 AC_ARG_WITH([inotify],
             [AS_HELP_STRING([--without-inotify],
             [(Linux only) do not build with inotify support (default is yes)])],

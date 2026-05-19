@@ -4,6 +4,12 @@
 
 ![](https://github.com/libimobiledevice/libusbmuxd/actions/workflows/build.yml/badge.svg)
 
+> This fork is intended as a macOS/iPhone Wi-Fi command fix for
+> `libimobiledevice` tools. It lets commands such as `ideviceinfo -n`,
+> `idevicediagnostics -n`, and `idevicepair -n validate` find paired iPhones
+> over Wi-Fi through Xcode/CoreDevice when Apple's usbmuxd does not report the
+> device in the normal network device list.
+
 ## Table of Contents
 - [Features](#features)
 - [Building](#building)
@@ -13,6 +19,7 @@
     - [Windows](#windows)
   - [Configuring the source tree](#configuring-the-source-tree)
   - [Building and installation](#building-and-installation)
+  - [macOS arm64 local install with libimobiledevice tools](#macos-arm64-local-install-with-libimobiledevice-tools)
 - [Usage](#usage)
 - [Contributing](#contributing)
 - [Links](#links)
@@ -179,6 +186,132 @@ Configuration for libusbmuxd 2.1.0:
 
   Now type 'make' to build libusbmuxd 2.1.0,
   and then 'make install' for installation.
+```
+
+### Building and installation
+
+After configuring the source tree, build and install the library and bundled
+tools with:
+
+```shell
+make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
+make install
+```
+
+If the install prefix is a system-owned directory such as `/usr/local`, the
+second command might need `sudo`.
+
+### macOS arm64 local install with libimobiledevice tools
+
+The following workflow installs this modified `libusbmuxd` and the
+`libimobiledevice` command-line tools into a local, non-system prefix on Apple
+Silicon Macs. It avoids overwriting Homebrew packages and makes the tools use
+this library first. Use this fork when USB-based commands work but Wi-Fi
+commands like `ideviceinfo -n -u <UDID>` or `idevicediagnostics -n -u <UDID>`
+fail because the iPhone is not detected as a network device.
+
+Use a prefix without spaces. Some autotools/libtool steps are unreliable when
+the build or install path contains whitespace.
+
+```shell
+export LOCAL_PREFIX="$HOME/opt/libimobiledevice-local"
+export REPOS="$HOME/src/libimobiledevice-local"
+mkdir -p "$LOCAL_PREFIX" "$REPOS"
+```
+
+Install the macOS prerequisites:
+
+```shell
+xcode-select --install
+brew install autoconf automake libtool pkg-config \
+  libplist libimobiledevice-glue libtatsu openssl@3
+```
+
+For CoreDevice/Xcode Wi-Fi discovery, install the full Xcode app and make sure
+`xcrun devicectl` is available:
+
+```shell
+sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+xcrun devicectl list devices
+```
+
+Build and install this modified `libusbmuxd`:
+
+```shell
+cd "$REPOS"
+git clone https://github.com/Shadowsx3/libusbmuxd.git
+cd libusbmuxd
+
+export PKG_CONFIG_PATH="$LOCAL_PREFIX/lib/pkgconfig:/opt/homebrew/lib/pkgconfig:/opt/homebrew/share/pkgconfig"
+./autogen.sh --prefix="$LOCAL_PREFIX"
+make -j"$(sysctl -n hw.ncpu)"
+make install
+```
+
+Build and install `libimobiledevice` tools against the local `libusbmuxd`:
+
+```shell
+cd "$REPOS"
+git clone https://github.com/libimobiledevice/libimobiledevice.git
+cd libimobiledevice
+
+export PKG_CONFIG_PATH="$LOCAL_PREFIX/lib/pkgconfig:/opt/homebrew/lib/pkgconfig:/opt/homebrew/share/pkgconfig"
+export CPPFLAGS="-I$LOCAL_PREFIX/include"
+export LDFLAGS="-L$LOCAL_PREFIX/lib"
+
+./autogen.sh --prefix="$LOCAL_PREFIX" --without-cython
+make -j"$(sysctl -n hw.ncpu)"
+make install
+```
+
+Add the local tools to your shell startup file:
+
+```shell
+cat >> ~/.zshrc <<EOF
+
+# Local libimobiledevice tools using modified libusbmuxd.
+export LIBIMOBILEDEVICE_LOCAL="$LOCAL_PREFIX"
+export PATH="\$LIBIMOBILEDEVICE_LOCAL/bin:\$PATH"
+export PKG_CONFIG_PATH="\$LIBIMOBILEDEVICE_LOCAL/lib/pkgconfig:/opt/homebrew/lib/pkgconfig:/opt/homebrew/share/pkgconfig:\${PKG_CONFIG_PATH:-}"
+export DYLD_LIBRARY_PATH="\$LIBIMOBILEDEVICE_LOCAL/lib:\${DYLD_LIBRARY_PATH:-}"
+EOF
+```
+
+Open a new shell, then verify the selected binaries and linkage:
+
+```shell
+which idevice_id
+otool -L "$(which idevice_id)" | grep libusbmuxd
+```
+
+The `otool` output should reference:
+
+```text
+$HOME/opt/libimobiledevice-local/lib/libusbmuxd-2.0.7.dylib
+```
+
+To verify Wi-Fi device discovery through CoreDevice/Xcode, make sure the iPhone
+is paired with Xcode and reachable on the same network, then run:
+
+```shell
+idevice_id -n -l
+ideviceinfo -n -u <UDID> -k DeviceName
+idevicediagnostics -n -u <UDID> diagnostics GasGauge
+```
+
+This modified library can add paired physical devices from
+`xcrun devicectl list devices` to the network device list when usbmuxd does not
+report them. To disable that CoreDevice fallback for a command, set:
+
+```shell
+LIBUSBMUXD_COREDEVICE_AUTODISCOVERY=0 idevice_id -n -l
+```
+
+To force CoreDevice discovery even when usbmuxd already reports network
+devices, set:
+
+```shell
+LIBUSBMUXD_COREDEVICE_AUTODISCOVERY=force idevice_id -n -l
 ```
 
 ## Usage

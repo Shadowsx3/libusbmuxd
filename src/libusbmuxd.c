@@ -67,6 +67,7 @@ extern char *program_invocation_short_name;
 #ifdef __APPLE__
 extern int _NSGetExecutablePath(char* buf, uint32_t* bufsize);
 #include <sys/stat.h>
+#include <sys/wait.h>
 #endif
 #endif
 
@@ -358,7 +359,17 @@ static char *trim_network_device_token(char *str)
 static int network_device_exists(struct collection *device_collection, const char *udid)
 {
 	FOREACH(usbmuxd_device_info_t *dev, device_collection) {
-		if (dev && !strcmp(dev->udid, udid)) {
+		if (dev && dev->conn_type == CONNECTION_TYPE_NETWORK && !strcmp(dev->udid, udid)) {
+			return 1;
+		}
+	} ENDFOREACH
+	return 0;
+}
+
+static int network_device_collection_has_network(struct collection *device_collection)
+{
+	FOREACH(usbmuxd_device_info_t *dev, device_collection) {
+		if (dev && dev->conn_type == CONNECTION_TYPE_NETWORK) {
 			return 1;
 		}
 	} ENDFOREACH
@@ -400,6 +411,46 @@ static int resolve_network_device_host(const char *host, uint8_t *conn_data, siz
 	return ret;
 }
 
+static uint32_t next_network_device_handle(struct collection *device_collection)
+{
+	uint32_t next_handle = 0xC0000000u + (uint32_t)collection_count(device_collection) + 1;
+
+	FOREACH(usbmuxd_device_info_t *dev, device_collection) {
+		if (dev && dev->handle >= next_handle) {
+			next_handle = dev->handle + 1;
+		}
+	} ENDFOREACH
+
+	return next_handle;
+}
+
+static int add_network_device(struct collection *device_collection, const char *udid, const char *host, uint32_t *next_handle)
+{
+	usbmuxd_device_info_t *devinfo = NULL;
+
+	if (!udid || !*udid || !host || !*host || network_device_exists(device_collection, udid)) {
+		return 0;
+	}
+
+	devinfo = (usbmuxd_device_info_t*)calloc(1, sizeof(usbmuxd_device_info_t));
+	if (!devinfo) {
+		return -1;
+	}
+	devinfo->handle = (*next_handle)++;
+	devinfo->conn_type = CONNECTION_TYPE_NETWORK;
+	stpncpy(devinfo->udid, udid, sizeof(devinfo->udid)-1);
+
+	if (resolve_network_device_host(host, devinfo->conn_data, sizeof(devinfo->conn_data)) < 0) {
+		LIBUSBMUXD_DEBUG(1, "%s: Could not resolve network device host '%s' for %s\n", __func__, host, udid);
+		free(devinfo);
+		return 0;
+	}
+
+	LIBUSBMUXD_DEBUG(1, "%s: Added fallback network device %s at %s\n", __func__, udid, host);
+	collection_add(device_collection, devinfo);
+	return 1;
+}
+
 static void add_env_network_devices(struct collection *device_collection)
 {
 	const char *env = getenv("LIBUSBMUXD_NETWORK_DEVICES");
@@ -417,13 +468,12 @@ static void add_env_network_devices(struct collection *device_collection)
 		return;
 	}
 
-	next_handle = 0xC0000000u + (uint32_t)collection_count(device_collection) + 1;
+	next_handle = next_network_device_handle(device_collection);
 	entry = strtok_r(spec, ",;", &saveptr);
 	while (entry) {
 		char *sep = strchr(entry, '=');
 		char *udid = NULL;
 		char *host = NULL;
-		usbmuxd_device_info_t *devinfo = NULL;
 
 		if (!sep) {
 			sep = strchr(entry, '@');
@@ -437,33 +487,242 @@ static void add_env_network_devices(struct collection *device_collection)
 		*sep = '\0';
 		udid = trim_network_device_token(entry);
 		host = trim_network_device_token(sep + 1);
-		if (!*udid || !*host || network_device_exists(device_collection, udid)) {
-			entry = strtok_r(NULL, ",;", &saveptr);
-			continue;
-		}
-
-		devinfo = (usbmuxd_device_info_t*)calloc(1, sizeof(usbmuxd_device_info_t));
-		if (!devinfo) {
+		if (add_network_device(device_collection, udid, host, &next_handle) < 0) {
 			break;
 		}
-		devinfo->handle = next_handle++;
-		devinfo->conn_type = CONNECTION_TYPE_NETWORK;
-		stpncpy(devinfo->udid, udid, sizeof(devinfo->udid)-1);
-
-		if (resolve_network_device_host(host, devinfo->conn_data, sizeof(devinfo->conn_data)) < 0) {
-			LIBUSBMUXD_DEBUG(1, "%s: Could not resolve network device host '%s' for %s\n", __func__, host, udid);
-			free(devinfo);
-			entry = strtok_r(NULL, ",;", &saveptr);
-			continue;
-		}
-
-		LIBUSBMUXD_DEBUG(1, "%s: Added fallback network device %s at %s\n", __func__, udid, host);
-		collection_add(device_collection, devinfo);
 		entry = strtok_r(NULL, ",;", &saveptr);
 	}
 
 	free(spec);
 }
+
+#if defined(__APPLE__) && defined(HAVE_PLIST_JSON)
+static int plist_dict_get_string(plist_t dict, const char *key, char **value)
+{
+	plist_t node = plist_dict_get_item(dict, key);
+
+	if (!node || plist_get_node_type(node) != PLIST_STRING) {
+		return 0;
+	}
+
+	plist_get_string_val(node, value);
+	return (*value != NULL);
+}
+
+static char *read_text_file(const char *path, uint32_t *length)
+{
+	FILE *fp = fopen(path, "rb");
+	char *data = NULL;
+	long size;
+
+	if (!fp) {
+		return NULL;
+	}
+	if (fseek(fp, 0, SEEK_END) != 0) {
+		fclose(fp);
+		return NULL;
+	}
+	size = ftell(fp);
+	if (size < 0 || size > INT32_MAX) {
+		fclose(fp);
+		return NULL;
+	}
+	if (fseek(fp, 0, SEEK_SET) != 0) {
+		fclose(fp);
+		return NULL;
+	}
+
+	data = (char*)malloc((size_t)size + 1);
+	if (!data) {
+		fclose(fp);
+		return NULL;
+	}
+	if (fread(data, 1, (size_t)size, fp) != (size_t)size) {
+		free(data);
+		fclose(fp);
+		return NULL;
+	}
+	data[size] = '\0';
+	fclose(fp);
+
+	*length = (uint32_t)size;
+	return data;
+}
+
+static char *coredevice_human_hostname(plist_t hostnames, const char *udid, const char *identifier)
+{
+	char *fallback = NULL;
+	uint32_t i;
+	uint32_t count;
+
+	if (!hostnames || plist_get_node_type(hostnames) != PLIST_ARRAY) {
+		return NULL;
+	}
+
+	count = plist_array_get_size(hostnames);
+	for (i = 0; i < count; i++) {
+		plist_t node = plist_array_get_item(hostnames, i);
+		char *hostname = NULL;
+		char base[256];
+		char *dot = NULL;
+
+		if (!node || plist_get_node_type(node) != PLIST_STRING) {
+			continue;
+		}
+		plist_get_string_val(node, &hostname);
+		if (!hostname) {
+			continue;
+		}
+		if (!fallback) {
+			fallback = strdup(hostname);
+		}
+
+		stpncpy(base, hostname, sizeof(base)-1);
+		base[sizeof(base)-1] = '\0';
+		dot = strchr(base, '.');
+		if (dot) {
+			*dot = '\0';
+		}
+		if ((!udid || strcasecmp(base, udid) != 0) && (!identifier || strcasecmp(base, identifier) != 0)) {
+			free(fallback);
+			return hostname;
+		}
+		free(hostname);
+	}
+
+	return fallback;
+}
+
+static int coredevice_autodiscovery_enabled(void)
+{
+	const char *env = getenv("LIBUSBMUXD_COREDEVICE_AUTODISCOVERY");
+
+	if (env && (!strcmp(env, "0") || !strcasecmp(env, "false") || !strcasecmp(env, "no"))) {
+		return 0;
+	}
+	return 1;
+}
+
+static int coredevice_autodiscovery_forced(void)
+{
+	const char *env = getenv("LIBUSBMUXD_COREDEVICE_AUTODISCOVERY");
+
+	return (env && (!strcmp(env, "1") || !strcasecmp(env, "true") || !strcasecmp(env, "yes") || !strcasecmp(env, "force")));
+}
+
+static void add_coredevice_network_devices(struct collection *device_collection)
+{
+	char path[] = "/tmp/libusbmuxd-coredevice-XXXXXX.json";
+	char command[512];
+	char *json = NULL;
+	uint32_t json_len = 0;
+	plist_t root = NULL;
+	plist_t result = NULL;
+	plist_t devlist = NULL;
+	uint32_t next_handle;
+	uint32_t i;
+	uint32_t count;
+	int fd;
+	int status;
+
+	if (!coredevice_autodiscovery_enabled()) {
+		return;
+	}
+
+	fd = mkstemps(path, 5);
+	if (fd < 0) {
+		return;
+	}
+	close(fd);
+
+	snprintf(command, sizeof(command), "xcrun devicectl list devices --timeout 5 --json-output %s >/dev/null 2>/dev/null", path);
+	status = system(command);
+	if (status == -1 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+		unlink(path);
+		return;
+	}
+
+	json = read_text_file(path, &json_len);
+	unlink(path);
+	if (!json) {
+		return;
+	}
+
+	if (plist_from_json(json, json_len, &root) != PLIST_ERR_SUCCESS || !root) {
+		free(json);
+		return;
+	}
+	free(json);
+
+	result = plist_dict_get_item(root, "result");
+	devlist = result ? plist_dict_get_item(result, "devices") : NULL;
+	if (!devlist || plist_get_node_type(devlist) != PLIST_ARRAY) {
+		plist_free(root);
+		return;
+	}
+
+	next_handle = next_network_device_handle(device_collection);
+	count = plist_array_get_size(devlist);
+	for (i = 0; i < count; i++) {
+		plist_t device = plist_array_get_item(devlist, i);
+		plist_t hardware = NULL;
+		plist_t connection = NULL;
+		plist_t hostnames = NULL;
+		char *reality = NULL;
+		char *pairing_state = NULL;
+		char *udid = NULL;
+		char *identifier = NULL;
+		char *hostname = NULL;
+
+		if (!device || plist_get_node_type(device) != PLIST_DICT) {
+			continue;
+		}
+
+		hardware = plist_dict_get_item(device, "hardwareProperties");
+		connection = plist_dict_get_item(device, "connectionProperties");
+		if (!hardware || !connection) {
+			continue;
+		}
+
+		plist_dict_get_string(hardware, "reality", &reality);
+		plist_dict_get_string(connection, "pairingState", &pairing_state);
+		plist_dict_get_string(hardware, "udid", &udid);
+		plist_dict_get_string(device, "identifier", &identifier);
+
+		if (!reality || strcmp(reality, "physical") != 0 || !pairing_state || strcmp(pairing_state, "paired") != 0 || !udid || !*udid) {
+			free(reality);
+			free(pairing_state);
+			free(udid);
+			free(identifier);
+			continue;
+		}
+
+		hostnames = plist_dict_get_item(connection, "potentialHostnames");
+		hostname = coredevice_human_hostname(hostnames, udid, identifier);
+		if (hostname) {
+			add_network_device(device_collection, udid, hostname, &next_handle);
+			free(hostname);
+		}
+
+		free(reality);
+		free(pairing_state);
+		free(udid);
+		free(identifier);
+	}
+
+	plist_free(root);
+}
+#else
+static int coredevice_autodiscovery_forced(void)
+{
+	return 0;
+}
+
+static void add_coredevice_network_devices(struct collection *device_collection)
+{
+	(void)device_collection;
+}
+#endif
 
 static int receive_packet(int sfd, struct usbmuxd_header *header, void **payload, int timeout)
 {
@@ -1523,6 +1782,9 @@ got_device_list:
 	socket_close(sfd);
 
 	add_env_network_devices(&tmpdevs);
+	if (!network_device_collection_has_network(&tmpdevs) || coredevice_autodiscovery_forced()) {
+		add_coredevice_network_devices(&tmpdevs);
+	}
 
 	// create copy of device info entries from collection
 	newlist = (usbmuxd_device_info_t*)malloc(sizeof(usbmuxd_device_info_t) * (collection_count(&tmpdevs) + 1));
