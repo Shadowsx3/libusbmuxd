@@ -1,3 +1,10 @@
+Version 2.1.1-wifi.4
+~~~~~~~~~~~~~~~~~~~~
+
+* Changes:
+  - Do not report a fallback or duplicate network device when the same iPhone
+    UDID is already reported over USB.
+
 Version 2.1.1-wifi.3
 ~~~~~~~~~~~~~~~~~~~~
 

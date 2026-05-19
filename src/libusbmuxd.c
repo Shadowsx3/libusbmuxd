@@ -366,6 +366,34 @@ static int network_device_exists(struct collection *device_collection, const cha
 	return 0;
 }
 
+static int usb_device_exists(struct collection *device_collection, const char *udid)
+{
+	FOREACH(usbmuxd_device_info_t *dev, device_collection) {
+		if (dev && dev->conn_type == CONNECTION_TYPE_USB && !strcmp(dev->udid, udid)) {
+			return 1;
+		}
+	} ENDFOREACH
+	return 0;
+}
+
+static void remove_network_devices_with_usb_peer(struct collection *device_collection)
+{
+	int removed;
+
+	do {
+		removed = 0;
+		FOREACH(usbmuxd_device_info_t *dev, device_collection) {
+			if (dev && dev->conn_type == CONNECTION_TYPE_NETWORK && usb_device_exists(device_collection, dev->udid)) {
+				LIBUSBMUXD_DEBUG(1, "%s: Ignoring network device %s because it is already reported over USB\n", __func__, dev->udid);
+				collection_remove(device_collection, dev);
+				free(dev);
+				removed = 1;
+				break;
+			}
+		} ENDFOREACH
+	} while (removed);
+}
+
 static int network_device_collection_has_network(struct collection *device_collection)
 {
 	FOREACH(usbmuxd_device_info_t *dev, device_collection) {
@@ -429,6 +457,10 @@ static int add_network_device(struct collection *device_collection, const char *
 	usbmuxd_device_info_t *devinfo = NULL;
 
 	if (!udid || !*udid || !host || !*host || network_device_exists(device_collection, udid)) {
+		return 0;
+	}
+	if (usb_device_exists(device_collection, udid)) {
+		LIBUSBMUXD_DEBUG(1, "%s: Ignoring fallback network device %s because it is already reported over USB\n", __func__, udid);
 		return 0;
 	}
 
@@ -1781,6 +1813,7 @@ got_device_list:
 	// explicitly close connection
 	socket_close(sfd);
 
+	remove_network_devices_with_usb_peer(&tmpdevs);
 	add_env_network_devices(&tmpdevs);
 	if (!network_device_collection_has_network(&tmpdevs) || coredevice_autodiscovery_forced()) {
 		add_coredevice_network_devices(&tmpdevs);
